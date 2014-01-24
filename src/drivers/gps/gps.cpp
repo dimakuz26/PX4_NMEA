@@ -65,6 +65,7 @@
 
 #include "ubx.h"
 #include "mtk.h"
+#include "nmea.h"
 
 
 #define TIMEOUT_5HZ 500
@@ -315,6 +316,11 @@ GPS::task_main()
 				_Helper = new MTK(_serial_fd, &_report);
 				break;
 
+			case GPS_DRIVER_MODE_NMEA:
+
+				_Helper = new NMEA(_serial_fd, &_report);
+				break;
+
 			default:
 				break;
 			}
@@ -360,6 +366,10 @@ GPS::task_main()
 							mode_str = "MTK";
 							break;
 
+					case GPS_DRIVER_MODE_NMEA:
+						mode_str = "NMEA";
+						break;
+
 						default:
 							break;
 						}
@@ -387,6 +397,10 @@ GPS::task_main()
 				break;
 
 			case GPS_DRIVER_MODE_MTK:
+			_mode = GPS_DRIVER_MODE_NMEA;
+			break;
+
+		case GPS_DRIVER_MODE_NMEA:
 				_mode = GPS_DRIVER_MODE_UBX;
 				break;
 
@@ -424,6 +438,10 @@ GPS::print_info()
 
 	case GPS_DRIVER_MODE_MTK:
 		warnx("protocol: MTK");
+		break;
+
+	case GPS_DRIVER_MODE_NMEA:
+		warnx("protocol: NMEA");
 		break;
 
 	default:

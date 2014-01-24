@@ -40,4 +40,5 @@ MODULE_COMMAND	= gps
 SRCS		= gps.cpp \
 		  gps_helper.cpp \
 		  mtk.cpp \
-		  ubx.cpp
+		  ubx.cpp \
+		  nmea.cpp
