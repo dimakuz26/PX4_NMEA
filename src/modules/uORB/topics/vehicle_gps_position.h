@@ -66,8 +66,8 @@ struct vehicle_gps_position_s {
 	uint8_t fix_type; 				/**< 0-1: no fix, 2: 2D fix, 3: 3D fix. Some applications will not use the value of this field unless it is at least two, so always correctly fill in the fix.   */
 	uint8_t fix_quality; 				/**< GPS Quality indicator: 0: Fix not valid, 1: GPS fix, 2: Differential GPS fix, OmniSTAR VBS, 4: Real-Time Kinematic, fixed integers, 5: Real-Time Kinematic, float integers, OmniSTAR XP/HP or Location RTK   */
 
-	float eph_m;					/**< GPS HDOP horizontal dilution of position in m */
-	float epv_m;					/**< GPS VDOP horizontal dilution of position in m */
+	float eph;					/**< GPS HDOP horizontal dilution of position in m */
+	float epv;					/**< GPS VDOP horizontal dilution of position in m */
 
 	unsigned noise_per_ms;				/**< */
 	unsigned jamming_indicator;			/**< */

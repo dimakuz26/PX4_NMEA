@@ -123,9 +123,9 @@ public:
 	/**
 	 * Display the mavlink status.
 	 */
-	void			status();
+	void			display_status();
 
-	static int		stream(int argc, char *argv[]);
+	static int		stream_command(int argc, char *argv[]);
 
 	static int		instance_count();
 
@@ -213,11 +213,15 @@ public:
 	 */
 	int			enable_flow_control(bool enabled);
 
-	const mavlink_channel_t	get_channel();
+	mavlink_channel_t	get_channel();
+
+	void configure_stream_threadsafe(const char *stream_name, float rate);
 
 	bool			_task_should_exit;	/**< if true, mavlink task should exit */
 
 	int			get_mavlink_fd() { return _mavlink_fd; }
+
+	MavlinkStream * get_streams() const { return _streams; }
 
 
 	/* Functions for waiting to start transmission until message received. */
@@ -231,6 +235,11 @@ public:
     
     void lockMessageBufferMutex(void) { pthread_mutex_lock(&_message_buffer_mutex); }
     void unlockMessageBufferMutex(void) { pthread_mutex_unlock(&_message_buffer_mutex); }
+
+	/**
+	 * Count a transmision error
+	 */
+	void count_txerr();
 
 protected:
 	Mavlink			*next;
@@ -302,13 +311,14 @@ private:
 
 	pthread_mutex_t		_message_buffer_mutex;
 
-	perf_counter_t		_loop_perf;			/**< loop performance counter */
-
 	bool			_param_initialized;
 	param_t			_param_system_id;
 	param_t			_param_component_id;
 	param_t			_param_system_type;
 	param_t			_param_use_hil_gps;
+
+	perf_counter_t		_loop_perf;			/**< loop performance counter */
+	perf_counter_t		_txerr_perf;			/**< TX error counter */
 
 	/**
 	 * Send one parameter.
@@ -371,7 +381,6 @@ private:
 	int mavlink_open_uart(int baudrate, const char *uart_name, struct termios *uart_config_original, bool *is_usb);
 
 	int configure_stream(const char *stream_name, const float rate);
-	void configure_stream_threadsafe(const char *stream_name, const float rate);
 
 	int message_buffer_init(int size);
 

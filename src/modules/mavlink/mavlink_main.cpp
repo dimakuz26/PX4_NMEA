@@ -197,13 +197,14 @@ mavlink_send_uart_bytes(mavlink_channel_t channel, const uint8_t *ch, int length
 
 			if (buf_free < desired) {
 				/* we don't want to send anything just in half, so return */
+				instance->count_txerr();
 				return;
 			}
 		}
 
 		ssize_t ret = write(uart, ch, desired);
 		if (ret != desired) {
-			// XXX overflow perf
+			instance->count_txerr();
 		} else {
 			last_write_success_times[(unsigned)channel] = last_write_try_times[(unsigned)channel];
 		}
@@ -249,7 +250,8 @@ Mavlink::Mavlink() :
 	_param_use_hil_gps(0),
 
 /* performance counters */
-	_loop_perf(perf_alloc(PC_ELAPSED, "mavlink"))
+	_loop_perf(perf_alloc(PC_ELAPSED, "mavlink_el")),
+	_txerr_perf(perf_alloc(PC_COUNT, "mavlink_txe"))
 {
 	_wpm = &_wpm_s;
 	mission.count = 0;
@@ -302,6 +304,7 @@ Mavlink::Mavlink() :
 Mavlink::~Mavlink()
 {
 	perf_free(_loop_perf);
+	perf_free(_txerr_perf);
 
 	if (_task_running) {
 		/* task wakes up every 10ms or so at the longest */
@@ -324,6 +327,12 @@ Mavlink::~Mavlink()
 	}
 
 	LL_DELETE(_mavlink_instances, this);
+}
+
+void
+Mavlink::count_txerr()
+{
+	perf_count(_txerr_perf);
 }
 
 void
@@ -465,7 +474,7 @@ Mavlink::get_instance_id()
 	return _instance_id;
 }
 
-const mavlink_channel_t
+mavlink_channel_t
 Mavlink::get_channel()
 {
 	return _channel;
@@ -915,7 +924,11 @@ int Mavlink::map_mavlink_mission_item_to_mission_item(const mavlink_mission_item
 	case MAV_CMD_NAV_TAKEOFF:
 		mission_item->pitch_min = mavlink_mission_item->param1;
 		break;
-
+	case MAV_CMD_DO_JUMP:
+		mission_item->do_jump_mission_index = mavlink_mission_item->param1;
+		mission_item->do_jump_current_count = 0;
+		mission_item->do_jump_repeat_count = mavlink_mission_item->param2;
+		break;
 	default:
 		mission_item->acceptance_radius = mavlink_mission_item->param2;
 		mission_item->time_inside = mavlink_mission_item->param1;
@@ -930,6 +943,9 @@ int Mavlink::map_mavlink_mission_item_to_mission_item(const mavlink_mission_item
 	mission_item->autocontinue = mavlink_mission_item->autocontinue;
 	// mission_item->index = mavlink_mission_item->seq;
 	mission_item->origin = ORIGIN_MAVLINK;
+
+	/* reset DO_JUMP count */
+	mission_item->do_jump_current_count = 0;
 
 	return OK;
 }
@@ -946,6 +962,11 @@ int Mavlink::map_mission_item_to_mavlink_mission_item(const struct mission_item_
 	switch (mission_item->nav_cmd) {
 	case NAV_CMD_TAKEOFF:
 		mavlink_mission_item->param1 = mission_item->pitch_min;
+		break;
+
+	case NAV_CMD_DO_JUMP:
+		mavlink_mission_item->param1 = mission_item->do_jump_mission_index;
+		mavlink_mission_item->param2 = mission_item->do_jump_repeat_count;
 		break;
 
 	default:
@@ -2088,7 +2109,7 @@ Mavlink::task_main(int argc, char *argv[])
                 write_ptr = (uint8_t*)&msg;
 
                 // Pull a single message from the buffer
-                int read_count = available;
+                size_t read_count = available;
                 if (read_count > sizeof(mavlink_message_t)) {
                     read_count = sizeof(mavlink_message_t);
                 }
@@ -2181,11 +2202,20 @@ int Mavlink::start_helper(int argc, char *argv[])
 	/* create the instance in task context */
 	Mavlink *instance = new Mavlink();
 
-	/* this will actually only return once MAVLink exits */
-	int res = instance->task_main(argc, argv);
+	int res;
 
-	/* delete instance on main thread end */
-	delete instance;
+	if (!instance) {
+
+		/* out of memory */
+		res = -ENOMEM;
+		warnx("OUT OF MEM");
+	} else {
+		/* this will actually only return once MAVLink exits */
+		res = instance->task_main(argc, argv);
+
+		/* delete instance on main thread end */
+		delete instance;
+	}
 
 	return res;
 }
@@ -2236,13 +2266,13 @@ Mavlink::start(int argc, char *argv[])
 }
 
 void
-Mavlink::status()
+Mavlink::display_status()
 {
 	warnx("running");
 }
 
 int
-Mavlink::stream(int argc, char *argv[])
+Mavlink::stream_command(int argc, char *argv[])
 {
 	const char *device_name = DEFAULT_DEVICE_NAME;
 	float rate = -1.0f;
@@ -2330,7 +2360,7 @@ int mavlink_main(int argc, char *argv[])
 		// 	mavlink::g_mavlink->status();
 
 	} else if (!strcmp(argv[1], "stream")) {
-		return Mavlink::stream(argc, argv);
+		return Mavlink::stream_command(argc, argv);
 
 	} else {
 		usage();

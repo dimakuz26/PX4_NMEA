@@ -976,7 +976,8 @@ int sdlog2_thread_main(int argc, char *argv[])
 			struct log_BATT_s log_BATT;
 			struct log_DIST_s log_DIST;
 			struct log_TELE_s log_TELE;
-			struct log_ESTM_s log_ESTM;
+			struct log_EST0_s log_EST0;
+			struct log_EST1_s log_EST1;
 			struct log_PWR_s log_PWR;
 			struct log_VICN_s log_VICN;
 			struct log_GS0A_s log_GS0A;
@@ -1117,7 +1118,7 @@ int sdlog2_thread_main(int argc, char *argv[])
 			log_msg.msg_type = LOG_STAT_MSG;
 			log_msg.body.log_STAT.main_state = (uint8_t) buf_status.main_state;
 			log_msg.body.log_STAT.arming_state = (uint8_t) buf_status.arming_state;
-			log_msg.body.log_STAT.failsafe_state = (uint8_t) buf_status.failsafe_state;
+			log_msg.body.log_STAT.failsafe_state = (uint8_t) buf_status.failsafe;
 			log_msg.body.log_STAT.battery_remaining = buf_status.battery_remaining;
 			log_msg.body.log_STAT.battery_warning = (uint8_t) buf_status.battery_warning;
 			log_msg.body.log_STAT.landed = (uint8_t) buf_status.condition_landed;
@@ -1138,8 +1139,8 @@ int sdlog2_thread_main(int argc, char *argv[])
 			log_msg.msg_type = LOG_GPS_MSG;
 			log_msg.body.log_GPS.gps_time = buf_gps_pos.time_gps_usec;
 			log_msg.body.log_GPS.fix_type = buf_gps_pos.fix_type;
-			log_msg.body.log_GPS.eph = buf_gps_pos.eph_m;
-			log_msg.body.log_GPS.epv = buf_gps_pos.epv_m;
+			log_msg.body.log_GPS.eph = buf_gps_pos.eph;
+			log_msg.body.log_GPS.epv = buf_gps_pos.epv;
 			log_msg.body.log_GPS.lat = buf_gps_pos.lat;
 			log_msg.body.log_GPS.lon = buf_gps_pos.lon;
 			log_msg.body.log_GPS.alt = buf_gps_pos.alt * 0.001f;
@@ -1352,7 +1353,7 @@ int sdlog2_thread_main(int argc, char *argv[])
 		/* --- GLOBAL POSITION SETPOINT --- */
 		if (copy_if_updated(ORB_ID(position_setpoint_triplet), subs.triplet_sub, &buf.triplet)) {
 			log_msg.msg_type = LOG_GPSP_MSG;
-			log_msg.body.log_GPSP.nav_state = buf.triplet.nav_state;
+			log_msg.body.log_GPSP.nav_state = 0;  /* TODO: Fix this */
 			log_msg.body.log_GPSP.lat = (int32_t)(buf.triplet.current.lat * 1e7d);
 			log_msg.body.log_GPSP.lon = (int32_t)(buf.triplet.current.lon * 1e7d);
 			log_msg.body.log_GPSP.alt = buf.triplet.current.alt;
@@ -1393,8 +1394,8 @@ int sdlog2_thread_main(int argc, char *argv[])
 		if (copy_if_updated(ORB_ID(rc_channels), subs.rc_sub, &buf.rc)) {
 			log_msg.msg_type = LOG_RC_MSG;
 			/* Copy only the first 8 channels of 14 */
-			memcpy(log_msg.body.log_RC.channel, buf.rc.chan, sizeof(log_msg.body.log_RC.channel));
-			log_msg.body.log_RC.channel_count = buf.rc.chan_count;
+			memcpy(log_msg.body.log_RC.channel, buf.rc.channels, sizeof(log_msg.body.log_RC.channel));
+			log_msg.body.log_RC.channel_count = buf.rc.channel_count;
 			log_msg.body.log_RC.signal_lost = buf.rc.signal_lost;
 			LOGBUFFER_WRITE_AND_COUNT(RC);
 		}
@@ -1489,15 +1490,21 @@ int sdlog2_thread_main(int argc, char *argv[])
 
 		/* --- ESTIMATOR STATUS --- */
 		if (copy_if_updated(ORB_ID(estimator_status), subs.estimator_status_sub, &buf.estimator_status)) {
-			log_msg.msg_type = LOG_ESTM_MSG;
-			unsigned maxcopy = (sizeof(buf.estimator_status.states) < sizeof(log_msg.body.log_ESTM.s)) ? sizeof(buf.estimator_status.states) : sizeof(log_msg.body.log_ESTM.s);
-			memset(&(log_msg.body.log_ESTM.s), 0, sizeof(log_msg.body.log_ESTM.s));
-			memcpy(&(log_msg.body.log_ESTM.s), buf.estimator_status.states, maxcopy);
-			log_msg.body.log_ESTM.n_states = buf.estimator_status.n_states;
-			log_msg.body.log_ESTM.states_nan = buf.estimator_status.states_nan;
-			log_msg.body.log_ESTM.covariance_nan = buf.estimator_status.covariance_nan;
-			log_msg.body.log_ESTM.kalman_gain_nan = buf.estimator_status.kalman_gain_nan;
-			LOGBUFFER_WRITE_AND_COUNT(ESTM);
+			log_msg.msg_type = LOG_EST0_MSG;
+			unsigned maxcopy0 = (sizeof(buf.estimator_status.states) < sizeof(log_msg.body.log_EST0.s)) ? sizeof(buf.estimator_status.states) : sizeof(log_msg.body.log_EST0.s);
+			memset(&(log_msg.body.log_EST0.s), 0, sizeof(log_msg.body.log_EST0.s));
+			memcpy(&(log_msg.body.log_EST0.s), buf.estimator_status.states, maxcopy0);
+			log_msg.body.log_EST0.n_states = buf.estimator_status.n_states;
+			log_msg.body.log_EST0.nan_flags = buf.estimator_status.nan_flags;
+			log_msg.body.log_EST0.health_flags = buf.estimator_status.health_flags;
+			log_msg.body.log_EST0.timeout_flags = buf.estimator_status.timeout_flags;
+			LOGBUFFER_WRITE_AND_COUNT(EST0);
+
+			log_msg.msg_type = LOG_EST1_MSG;
+			unsigned maxcopy1 = ((sizeof(buf.estimator_status.states) - maxcopy0) < sizeof(log_msg.body.log_EST1.s)) ? (sizeof(buf.estimator_status.states) - maxcopy0) : sizeof(log_msg.body.log_EST1.s);
+			memset(&(log_msg.body.log_EST1.s), 0, sizeof(log_msg.body.log_EST1.s));
+			memcpy(&(log_msg.body.log_EST1.s), buf.estimator_status.states + maxcopy0, maxcopy1);
+			LOGBUFFER_WRITE_AND_COUNT(EST1);
 		}
 
 		/* --- TECS STATUS --- */
@@ -1507,6 +1514,7 @@ int sdlog2_thread_main(int argc, char *argv[])
 			log_msg.body.log_TECS.altitude = buf.tecs_status.altitude;
 			log_msg.body.log_TECS.flightPathAngleSp = buf.tecs_status.flightPathAngleSp;
 			log_msg.body.log_TECS.flightPathAngle = buf.tecs_status.flightPathAngle;
+			log_msg.body.log_TECS.flightPathAngleFiltered = buf.tecs_status.flightPathAngleFiltered;
 			log_msg.body.log_TECS.airspeedSp = buf.tecs_status.airspeedSp;
 			log_msg.body.log_TECS.airspeed = buf.tecs_status.airspeed;
 			log_msg.body.log_TECS.airspeedFiltered = buf.tecs_status.airspeedFiltered;
