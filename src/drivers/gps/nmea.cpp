@@ -291,6 +291,8 @@ Example $PASHR,POS,2,10,125410.00,5525.8138702,N,03833.9587380,E,131.555,1.0,0.0
         _gps_position->fix_type = 3;
 	    _gps_position->timestamp_position = hrt_absolute_time();
 
+      _gps_position->fix_quality = fix_quality;
+
       int nmea_hour = nmea_time/10000;
       int nmea_minute = (nmea_time - nmea_hour*10000)/100;
       float64_t nmea_sec = nmea_time - nmea_hour*10000 - nmea_minute*100;

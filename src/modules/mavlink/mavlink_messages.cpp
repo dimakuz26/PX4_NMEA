@@ -669,7 +669,7 @@ protected:
 		if (gps_sub->update(&gps_time, &gps)) {
 			mavlink_msg_gps_raw_int_send(_channel,
 						     gps.timestamp_position,
-						     gps.fix_type,
+						     gps.fix_type + (gps.fix_quality << 4),
 						     gps.lat,
 						     gps.lon,
 						     gps.alt,
