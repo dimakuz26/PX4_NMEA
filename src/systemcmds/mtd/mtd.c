@@ -160,7 +160,11 @@ static void
 ramtron_attach(void)
 {
 	/* find the right spi */
+#ifdef CONFIG_ARCH_BOARD_AEROCORE
+	struct spi_dev_s *spi = up_spiinitialize(4);
+#else
 	struct spi_dev_s *spi = up_spiinitialize(2);
+#endif
 	/* this resets the spi bus, set correct bus speed again */
 	SPI_SETFREQUENCY(spi, 10 * 1000 * 1000);
 	SPI_SETBITS(spi, 8);
@@ -257,7 +261,6 @@ mtd_start(char *partition_names[], unsigned n_partitions)
 
 	/* Now create MTD FLASH partitions */
 
-	warnx("Creating partitions");
 	FAR struct mtd_dev_s *part[n_partitions];
 	char blockname[32];
 
@@ -265,9 +268,6 @@ mtd_start(char *partition_names[], unsigned n_partitions)
 	unsigned i;
 
 	for (offset = 0, i = 0; i < n_partitions; offset += nblocks, i++) {
-
-		warnx("  Partition %d. Block offset=%lu, size=%lu",
-		      i, (unsigned long)offset, (unsigned long)nblocks);
 
 		/* Create the partition */
 

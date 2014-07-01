@@ -56,6 +56,7 @@ class NMEA : public GPS_Helper
 
 	struct vehicle_gps_position_s *_gps_position;
 	int                    _fd;
+	int nmealog_fd;//miklm
 
 	nmea_decode_state_t   _decode_state;
 	uint8_t               _rx_buffer[RECV_BUFFER_SIZE];

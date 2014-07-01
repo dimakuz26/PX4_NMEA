@@ -1,37 +1,44 @@
-import output
+from xml.sax.saxutils import escape
+import codecs
 
-class DokuWikiOutput(output.Output):
-    def Generate(self, groups):
-        result = ""
+class DokuWikiTablesOutput():
+    def __init__(self, groups):
+        result = ("====== Parameter Reference ======\n"
+                  "<note>**This list is auto-generated from the source code** and contains the most recent parameter documentation.</note>\n"
+                  "\n")
         for group in groups:
             result += "==== %s ====\n\n" % group.GetName()
-            result += "^ Name            ^ Description    ^ Min    ^ Max    ^ Default   ^ Comment    ^\n"
+            result += "|< 100% 25% 45% 10% 10% 10% >|\n"
+            result += "^ Name ^ Description ^  Min ^  Max ^  Default ^\n"
+            result += "^ :::  ^ Comment ^^^^\n"
             for param in group.GetParams():
                 code = param.GetFieldValue("code")
                 name = param.GetFieldValue("short_desc")
-                name = name.replace("\n", "")
-                result += "| %s   | %s  " % (code, name)
                 min_val = param.GetFieldValue("min")
-                if min_val is not None:
-                    result += "| %s  " % min_val
-                else:
-                    result += "|"
                 max_val = param.GetFieldValue("max")
-                if max_val is not None:
-                    result += "| %s  " % max_val
-                else:
-                    result += "|"
                 def_val = param.GetFieldValue("default")
-                if def_val is not None:
-                    result += "| %s  " % def_val
-                else:
-                    result += "|"
                 long_desc = param.GetFieldValue("long_desc")
-                if long_desc is not None:
-                    long_desc = long_desc.replace("\n", "")
-                    result += "| %s  " % long_desc
+
+                if name == code:
+                    name = ""
                 else:
-                    result += "|"
-                result += "|\n"
+                    name = name.replace("\n", " ")
+                    name = name.replace("|", "%%|%%")
+                    name = name.replace("^", "%%^%%")
+
+                result += "| **%s** |" % code
+                result += " %s |" % name
+                result += "  %s |" % (min_val or "")
+                result += "  %s |" % (max_val or "")
+                result += "  %s |" % (def_val or "")
+                result += "\n"
+
+                if long_desc is not None:
+                    result += "| ::: | <div>%s</div> ||||\n" % long_desc
+
             result += "\n"
-        return result
+        self.output = result;
+
+    def Save(self, filename):
+        with codecs.open(filename, 'w', 'utf-8') as f:
+            f.write(self.output)

@@ -42,15 +42,18 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <string.h>
 
 #include <uORB/uORB.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/actuator_controls.h>
-#include <uORB/topics/vehicle_control_mode.h>
 #include <systemlib/systemlib.h>
 #include <systemlib/param/param.h>
 #include <systemlib/err.h>
 #include <drivers/drv_hrt.h>
+#include <drivers/drv_device.h>
 #include <mavlink/mavlink_log.h>
 
 #include "state_machine_helper.h"
@@ -64,13 +67,46 @@ static const int ERROR = -1;
 
 static bool arming_state_changed = true;
 static bool main_state_changed = true;
-static bool navigation_state_changed = true;
+static bool failsafe_state_changed = true;
+
+// This array defines the arming state transitions. The rows are the new state, and the columns
+// are the current state. Using new state and current  state you can index into the array which
+// will be true for a valid transition or false for a invalid transition. In some cases even
+// though the transition is marked as true additional checks must be made. See arming_state_transition
+// code for those checks.
+static const bool arming_transitions[ARMING_STATE_MAX][ARMING_STATE_MAX] = {
+	//                                  INIT,   STANDBY,    ARMED,  ARMED_ERROR,    STANDBY_ERROR,  REBOOT,     IN_AIR_RESTORE
+	{ /* ARMING_STATE_INIT */           true,   true,       false,  false,          false,          false,      false },
+	{ /* ARMING_STATE_STANDBY */        true,   true,       true,   true,           false,          false,      false },
+	{ /* ARMING_STATE_ARMED */          false,  true,       true,   false,          false,          false,      true },
+	{ /* ARMING_STATE_ARMED_ERROR */    false,  false,      true,   true,           false,          false,      false },
+	{ /* ARMING_STATE_STANDBY_ERROR */  true,   true,       false,  true,           true,           false,      false },
+	{ /* ARMING_STATE_REBOOT */         true,   true,       false,  false,          true,           true,       true },
+	{ /* ARMING_STATE_IN_AIR_RESTORE */ false,  false,      false,  false,          false,          false,      false }, // NYI
+};
+
+// You can index into the array with an arming_state_t in order to get it's textual representation
+static const char *state_names[ARMING_STATE_MAX] = {
+	"ARMING_STATE_INIT",
+	"ARMING_STATE_STANDBY",
+	"ARMING_STATE_ARMED",
+	"ARMING_STATE_ARMED_ERROR",
+	"ARMING_STATE_STANDBY_ERROR",
+	"ARMING_STATE_REBOOT",
+	"ARMING_STATE_IN_AIR_RESTORE",
+};
 
 transition_result_t
-arming_state_transition(struct vehicle_status_s *status, const struct safety_s *safety,
-	const struct vehicle_control_mode_s *control_mode,
-	arming_state_t new_arming_state, struct actuator_armed_s *armed)
+arming_state_transition(struct vehicle_status_s *status,            /// current vehicle status
+			const struct safety_s   *safety,            /// current safety settings
+			arming_state_t          new_arming_state,   /// arming state requested
+			struct actuator_armed_s *armed,             /// current armed status
+			const int               mavlink_fd)         /// mavlink fd for error reporting, 0 for none
 {
+	// Double check that our static arrays are still valid
+	ASSERT(ARMING_STATE_INIT == 0);
+	ASSERT(ARMING_STATE_IN_AIR_RESTORE == ARMING_STATE_MAX - 1);
+
 	/*
 	 * Perform an atomic state update
 	 */
@@ -83,103 +119,51 @@ arming_state_transition(struct vehicle_status_s *status, const struct safety_s *
 		ret = TRANSITION_NOT_CHANGED;
 
 	} else {
-
 		/* enforce lockdown in HIL */
-		if (control_mode->flag_system_hil_enabled) {
+		if (status->hil_state == HIL_STATE_ON) {
 			armed->lockdown = true;
+
 		} else {
 			armed->lockdown = false;
 		}
 
-		switch (new_arming_state) {
-		case ARMING_STATE_INIT:
+		// Check that we have a valid state transition
+		bool valid_transition = arming_transitions[new_arming_state][status->arming_state];
 
-			/* allow going back from INIT for calibration */
-			if (status->arming_state == ARMING_STATE_STANDBY) {
-				ret = TRANSITION_CHANGED;
-				armed->armed = false;
-				armed->ready_to_arm = false;
-			}
+		if (valid_transition) {
+			// We have a good transition. Now perform any secondary validation.
+			if (new_arming_state == ARMING_STATE_ARMED) {
+				// Fail transition if we need safety switch press
+				//      Allow if coming from in air restore
+				//      Allow if HIL_STATE_ON
+				if (status->arming_state != ARMING_STATE_IN_AIR_RESTORE && status->hil_state == HIL_STATE_OFF && safety->safety_switch_available && !safety->safety_off) {
+					if (mavlink_fd) {
+						mavlink_log_critical(mavlink_fd, "#audio: NOT ARMING: Press safety switch first.");
+					}
 
-			break;
-
-		case ARMING_STATE_STANDBY:
-
-			/* allow coming from INIT and disarming from ARMED */
-			if (status->arming_state == ARMING_STATE_INIT
-			    || status->arming_state == ARMING_STATE_ARMED
-			    || control_mode->flag_system_hil_enabled) {
-
-				/* sensors need to be initialized for STANDBY state */
-				if (status->condition_system_sensors_initialized) {
-					ret = TRANSITION_CHANGED;
-					armed->armed = false;
-					armed->ready_to_arm = true;
+					valid_transition = false;
 				}
+
+			} else if (new_arming_state == ARMING_STATE_STANDBY && status->arming_state == ARMING_STATE_ARMED_ERROR) {
+				new_arming_state = ARMING_STATE_STANDBY_ERROR;
 			}
-
-			break;
-
-		case ARMING_STATE_ARMED:
-
-			/* allow arming from STANDBY and IN-AIR-RESTORE */
-			if ((status->arming_state == ARMING_STATE_STANDBY
-			     || status->arming_state == ARMING_STATE_IN_AIR_RESTORE)
-			    && (!safety->safety_switch_available || safety->safety_off || control_mode->flag_system_hil_enabled)) { /* only allow arming if safety is off */
-				ret = TRANSITION_CHANGED;
-				armed->armed = true;
-				armed->ready_to_arm = true;
-			}
-
-			break;
-
-		case ARMING_STATE_ARMED_ERROR:
-
-			/* an armed error happens when ARMED obviously */
-			if (status->arming_state == ARMING_STATE_ARMED) {
-				ret = TRANSITION_CHANGED;
-				armed->armed = true;
-				armed->ready_to_arm = false;
-			}
-
-			break;
-
-		case ARMING_STATE_STANDBY_ERROR:
-
-			/* a disarmed error happens when in STANDBY or in INIT or after ARMED_ERROR */
-			if (status->arming_state == ARMING_STATE_STANDBY
-			    || status->arming_state == ARMING_STATE_INIT
-			    || status->arming_state == ARMING_STATE_ARMED_ERROR) {
-				ret = TRANSITION_CHANGED;
-				armed->armed = false;
-				armed->ready_to_arm = false;
-			}
-
-			break;
-
-		case ARMING_STATE_REBOOT:
-
-			/* an armed error happens when ARMED obviously */
-			if (status->arming_state == ARMING_STATE_INIT
-			    || status->arming_state == ARMING_STATE_STANDBY
-			    || status->arming_state == ARMING_STATE_STANDBY_ERROR) {
-				ret = TRANSITION_CHANGED;
-				armed->armed = false;
-				armed->ready_to_arm = false;
-			}
-
-			break;
-
-		case ARMING_STATE_IN_AIR_RESTORE:
-
-			/* XXX implement */
-			break;
-
-		default:
-			break;
 		}
 
-		if (ret == TRANSITION_CHANGED) {
+		// HIL can always go to standby
+		if (status->hil_state == HIL_STATE_ON && new_arming_state == ARMING_STATE_STANDBY) {
+			valid_transition = true;
+		}
+
+		/* Sensors need to be initialized for STANDBY state */
+		if (new_arming_state == ARMING_STATE_STANDBY && !status->condition_system_sensors_initialized) {
+			valid_transition = false;
+		}
+
+		// Finish up the state transition
+		if (valid_transition) {
+			armed->armed = new_arming_state == ARMING_STATE_ARMED || new_arming_state == ARMING_STATE_ARMED_ERROR;
+			armed->ready_to_arm = new_arming_state == ARMING_STATE_ARMED || new_arming_state == ARMING_STATE_STANDBY;
+			ret = TRANSITION_CHANGED;
 			status->arming_state = new_arming_state;
 			arming_state_changed = true;
 		}
@@ -188,8 +172,15 @@ arming_state_transition(struct vehicle_status_s *status, const struct safety_s *
 	/* end of atomic state update */
 	irqrestore(flags);
 
-	if (ret == TRANSITION_DENIED)
-		warnx("arming transition rejected");
+	if (ret == TRANSITION_DENIED) {
+		static const char *errMsg = "Invalid arming transition from %s to %s";
+
+		if (mavlink_fd) {
+			mavlink_log_critical(mavlink_fd, errMsg, state_names[status->arming_state], state_names[new_arming_state]);
+		}
+
+		warnx(errMsg, state_names[status->arming_state], state_names[new_arming_state]);
+	}
 
 	return ret;
 }
@@ -221,54 +212,58 @@ check_arming_state_changed()
 }
 
 transition_result_t
-main_state_transition(struct vehicle_status_s *current_state, main_state_t new_main_state)
+main_state_transition(struct vehicle_status_s *status, main_state_t new_main_state)
 {
 	transition_result_t ret = TRANSITION_DENIED;
 
-	/* only check transition if the new state is actually different from the current one */
-	if (new_main_state == current_state->main_state) {
-		ret = TRANSITION_NOT_CHANGED;
+	/* transition may be denied even if requested the same state because conditions may be changed */
+	switch (new_main_state) {
+	case MAIN_STATE_MANUAL:
+		ret = TRANSITION_CHANGED;
+		break;
 
-	} else {
+	case MAIN_STATE_ACRO:
+		ret = TRANSITION_CHANGED;
+		break;
 
-		switch (new_main_state) {
-		case MAIN_STATE_MANUAL:
+	case MAIN_STATE_ALTCTL:
+
+		/* need at minimum altitude estimate */
+		if (!status->is_rotary_wing ||
+		    (status->condition_local_altitude_valid ||
+		     status->condition_global_position_valid)) {
 			ret = TRANSITION_CHANGED;
-			break;
-
-		case MAIN_STATE_SEATBELT:
-
-			/* need at minimum altitude estimate */
-			if (current_state->condition_local_altitude_valid ||
-				current_state->condition_global_position_valid) {
-				ret = TRANSITION_CHANGED;
-			}
-
-			break;
-
-		case MAIN_STATE_EASY:
-
-			/* need at minimum local position estimate */
-			if (current_state->condition_local_position_valid ||
-				current_state->condition_global_position_valid) {
-				ret = TRANSITION_CHANGED;
-			}
-
-			break;
-
-		case MAIN_STATE_AUTO:
-
-			/* need global position estimate */
-			if (current_state->condition_global_position_valid) {
-				ret = TRANSITION_CHANGED;
-			}
-
-			break;
 		}
 
-		if (ret == TRANSITION_CHANGED) {
-			current_state->main_state = new_main_state;
+		break;
+
+	case MAIN_STATE_POSCTL:
+
+		/* need at minimum local position estimate */
+		if (status->condition_local_position_valid ||
+		    status->condition_global_position_valid) {
+			ret = TRANSITION_CHANGED;
+		}
+
+		break;
+
+	case MAIN_STATE_AUTO:
+
+		/* need global position estimate */
+		if (status->condition_global_position_valid) {
+			ret = TRANSITION_CHANGED;
+		}
+
+		break;
+	}
+
+	if (ret == TRANSITION_CHANGED) {
+		if (status->main_state != new_main_state) {
+			status->main_state = new_main_state;
 			main_state_changed = true;
+
+		} else {
+			ret = TRANSITION_NOT_CHANGED;
 		}
 	}
 
@@ -287,162 +282,11 @@ check_main_state_changed()
 	}
 }
 
-transition_result_t
-navigation_state_transition(struct vehicle_status_s *status, navigation_state_t new_navigation_state, struct vehicle_control_mode_s *control_mode)
-{
-	transition_result_t ret = TRANSITION_DENIED;
-
-	/* only check transition if the new state is actually different from the current one */
-	if (new_navigation_state == status->navigation_state) {
-		ret = TRANSITION_NOT_CHANGED;
-
-	} else {
-
-		switch (new_navigation_state) {
-		case NAVIGATION_STATE_DIRECT:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = false;
-			control_mode->flag_control_velocity_enabled = false;
-			control_mode->flag_control_position_enabled = false;
-			control_mode->flag_control_altitude_enabled = false;
-			control_mode->flag_control_climb_rate_enabled = false;
-			control_mode->flag_control_manual_enabled = true;
-			control_mode->flag_control_auto_enabled = false;
-			break;
-
-		case NAVIGATION_STATE_STABILIZE:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = false;
-			control_mode->flag_control_position_enabled = false;
-			control_mode->flag_control_altitude_enabled = false;
-			control_mode->flag_control_climb_rate_enabled = false;
-			control_mode->flag_control_manual_enabled = true;
-			control_mode->flag_control_auto_enabled = false;
-			break;
-
-		case NAVIGATION_STATE_ALTHOLD:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = false;
-			control_mode->flag_control_position_enabled = false;
-			control_mode->flag_control_altitude_enabled = true;
-			control_mode->flag_control_climb_rate_enabled = true;
-			control_mode->flag_control_manual_enabled = true;
-			control_mode->flag_control_auto_enabled = false;
-			break;
-
-		case NAVIGATION_STATE_VECTOR:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = true;
-			control_mode->flag_control_position_enabled = true;
-			control_mode->flag_control_altitude_enabled = true;
-			control_mode->flag_control_climb_rate_enabled = true;
-			control_mode->flag_control_manual_enabled = true;
-			control_mode->flag_control_auto_enabled = false;
-			break;
-
-		case NAVIGATION_STATE_AUTO_READY:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = false;
-			control_mode->flag_control_attitude_enabled = false;
-			control_mode->flag_control_velocity_enabled = false;
-			control_mode->flag_control_position_enabled = false;
-			control_mode->flag_control_altitude_enabled = false;
-			control_mode->flag_control_climb_rate_enabled = false;
-			control_mode->flag_control_manual_enabled = false;
-			control_mode->flag_control_auto_enabled = true;
-			break;
-
-		case NAVIGATION_STATE_AUTO_TAKEOFF:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = true;
-			control_mode->flag_control_position_enabled = true;
-			control_mode->flag_control_altitude_enabled = true;
-			control_mode->flag_control_climb_rate_enabled = true;
-			control_mode->flag_control_manual_enabled = false;
-			control_mode->flag_control_auto_enabled = true;
-			break;
-
-		case NAVIGATION_STATE_AUTO_LOITER:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = true;
-			control_mode->flag_control_position_enabled = true;
-			control_mode->flag_control_altitude_enabled = true;
-			control_mode->flag_control_climb_rate_enabled = true;
-			control_mode->flag_control_manual_enabled = false;
-			control_mode->flag_control_auto_enabled = false;
-			break;
-
-		case NAVIGATION_STATE_AUTO_MISSION:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = true;
-			control_mode->flag_control_position_enabled = true;
-			control_mode->flag_control_altitude_enabled = true;
-			control_mode->flag_control_climb_rate_enabled = true;
-			control_mode->flag_control_manual_enabled = false;
-			control_mode->flag_control_auto_enabled = true;
-			break;
-
-		case NAVIGATION_STATE_AUTO_RTL:
-			ret = TRANSITION_CHANGED;
-			control_mode->flag_control_rates_enabled = true;
-			control_mode->flag_control_attitude_enabled = true;
-			control_mode->flag_control_velocity_enabled = true;
-			control_mode->flag_control_position_enabled = true;
-			control_mode->flag_control_altitude_enabled = true;
-			control_mode->flag_control_climb_rate_enabled = true;
-			control_mode->flag_control_manual_enabled = false;
-			control_mode->flag_control_auto_enabled = true;
-			break;
-
-		case NAVIGATION_STATE_AUTO_LAND:
-
-			/* deny transitions from landed state */
-			if (status->navigation_state != NAVIGATION_STATE_AUTO_READY) {
-				ret = TRANSITION_CHANGED;
-				control_mode->flag_control_rates_enabled = true;
-				control_mode->flag_control_attitude_enabled = true;
-				control_mode->flag_control_velocity_enabled = true;
-				control_mode->flag_control_position_enabled = true;
-				control_mode->flag_control_altitude_enabled = true;
-				control_mode->flag_control_climb_rate_enabled = true;
-				control_mode->flag_control_manual_enabled = false;
-				control_mode->flag_control_auto_enabled = true;
-			}
-
-			break;
-
-		default:
-			break;
-		}
-
-		if (ret == TRANSITION_CHANGED) {
-			status->navigation_state = new_navigation_state;
-			control_mode->auto_state = status->navigation_state;
-			navigation_state_changed = true;
-		}
-	}
-
-	return ret;
-}
-
 bool
-check_navigation_state_changed()
+check_failsafe_state_changed()
 {
-	if (navigation_state_changed) {
-		navigation_state_changed = false;
+	if (failsafe_state_changed) {
+		failsafe_state_changed = false;
 		return true;
 
 	} else {
@@ -450,24 +294,15 @@ check_navigation_state_changed()
 	}
 }
 
-void
-set_navigation_state_changed()
-{
-	navigation_state_changed = true;
-}
-
 /**
 * Transition from one hil state to another
 */
-int hil_state_transition(hil_state_t new_state, int status_pub, struct vehicle_status_s *current_status, int control_mode_pub, struct vehicle_control_mode_s *current_control_mode, const int mavlink_fd)
+int hil_state_transition(hil_state_t new_state, int status_pub, struct vehicle_status_s *current_status, const int mavlink_fd)
 {
 	bool valid_transition = false;
 	int ret = ERROR;
 
-	warnx("Current state: %d, requested state: %d", current_status->hil_state, new_state);
-
 	if (current_status->hil_state == new_state) {
-		warnx("Hil state not changed");
 		valid_transition = true;
 
 	} else {
@@ -477,7 +312,7 @@ int hil_state_transition(hil_state_t new_state, int status_pub, struct vehicle_s
 		case HIL_STATE_OFF:
 
 			/* we're in HIL and unexpected things can happen if we disable HIL now */
-			mavlink_log_critical(mavlink_fd, "Not switching off HIL (safety)");
+			mavlink_log_critical(mavlink_fd, "#audio: Not switching off HIL (safety)");
 			valid_transition = false;
 
 			break;
@@ -488,9 +323,79 @@ int hil_state_transition(hil_state_t new_state, int status_pub, struct vehicle_s
 			    || current_status->arming_state == ARMING_STATE_STANDBY
 			    || current_status->arming_state == ARMING_STATE_STANDBY_ERROR) {
 
-				current_control_mode->flag_system_hil_enabled = true;
 				mavlink_log_critical(mavlink_fd, "Switched to ON hil state");
 				valid_transition = true;
+
+				// Disable publication of all attached sensors
+
+				/* list directory */
+				DIR		*d;
+				d = opendir("/dev");
+
+				if (d) {
+
+					struct dirent	*direntry;
+					char devname[24];
+
+					while ((direntry = readdir(d)) != NULL) {
+
+						/* skip serial ports */
+						if (!strncmp("tty", direntry->d_name, 3)) {
+							continue;
+						}
+
+						/* skip mtd devices */
+						if (!strncmp("mtd", direntry->d_name, 3)) {
+							continue;
+						}
+
+						/* skip ram devices */
+						if (!strncmp("ram", direntry->d_name, 3)) {
+							continue;
+						}
+
+						/* skip MMC devices */
+						if (!strncmp("mmc", direntry->d_name, 3)) {
+							continue;
+						}
+
+						/* skip mavlink */
+						if (!strcmp("mavlink", direntry->d_name)) {
+							continue;
+						}
+
+						/* skip console */
+						if (!strcmp("console", direntry->d_name)) {
+							continue;
+						}
+
+						/* skip null */
+						if (!strcmp("null", direntry->d_name)) {
+							continue;
+						}
+
+						snprintf(devname, sizeof(devname), "/dev/%s", direntry->d_name);
+
+						int sensfd = ::open(devname, 0);
+
+						if (sensfd < 0) {
+							warn("failed opening device %s", devname);
+							continue;
+						}
+
+						int block_ret = ::ioctl(sensfd, DEVIOCSPUBBLOCK, 1);
+						close(sensfd);
+
+						printf("Disabling %s: %s\n", devname, (block_ret == OK) ? "OK" : "ERROR");
+					}
+
+					closedir(d);
+
+				} else {
+					/* failed opening dir */
+					warnx("FAILED LISTING DEVICE ROOT DIRECTORY");
+					return 1;
+				}
 			}
 
 			break;
@@ -507,15 +412,79 @@ int hil_state_transition(hil_state_t new_state, int status_pub, struct vehicle_s
 		current_status->timestamp = hrt_absolute_time();
 		orb_publish(ORB_ID(vehicle_status), status_pub, current_status);
 
-		current_control_mode->timestamp = hrt_absolute_time();
-		orb_publish(ORB_ID(vehicle_control_mode), control_mode_pub, current_control_mode);
-
 		// XXX also set lockdown here
 
 		ret = OK;
 
 	} else {
 		mavlink_log_critical(mavlink_fd, "REJECTING invalid hil state transition");
+	}
+
+	return ret;
+}
+
+
+/**
+* Transition from one failsafe state to another
+*/
+transition_result_t failsafe_state_transition(struct vehicle_status_s *status, failsafe_state_t new_failsafe_state)
+{
+	transition_result_t ret = TRANSITION_DENIED;
+
+	/* transition may be denied even if requested the same state because conditions may be changed */
+	if (status->failsafe_state == FAILSAFE_STATE_TERMINATION) {
+		/* transitions from TERMINATION to other states not allowed */
+		if (new_failsafe_state == FAILSAFE_STATE_TERMINATION) {
+			ret = TRANSITION_NOT_CHANGED;
+		}
+
+	} else {
+		switch (new_failsafe_state) {
+		case FAILSAFE_STATE_NORMAL:
+			/* always allowed (except from TERMINATION state) */
+			ret = TRANSITION_CHANGED;
+			break;
+
+		case FAILSAFE_STATE_RTL:
+
+			/* global position and home position required for RTL */
+			if (status->condition_global_position_valid && status->condition_home_position_valid) {
+				status->set_nav_state = NAV_STATE_RTL;
+				status->set_nav_state_timestamp = hrt_absolute_time();
+				ret = TRANSITION_CHANGED;
+			}
+
+			break;
+
+		case FAILSAFE_STATE_LAND:
+
+			/* at least relative altitude estimate required for landing */
+			if (status->condition_local_altitude_valid || status->condition_global_position_valid) {
+				status->set_nav_state = NAV_STATE_LAND;
+				status->set_nav_state_timestamp = hrt_absolute_time();
+				ret = TRANSITION_CHANGED;
+			}
+
+			break;
+
+		case FAILSAFE_STATE_TERMINATION:
+			/* always allowed */
+			ret = TRANSITION_CHANGED;
+			break;
+
+		default:
+			break;
+		}
+
+		if (ret == TRANSITION_CHANGED) {
+			if (status->failsafe_state != new_failsafe_state) {
+				status->failsafe_state = new_failsafe_state;
+				failsafe_state_changed = true;
+
+			} else {
+				ret = TRANSITION_NOT_CHANGED;
+			}
+		}
 	}
 
 	return ret;

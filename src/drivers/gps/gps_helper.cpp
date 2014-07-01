@@ -1,8 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (C) 2012,2013 PX4 Development Team. All rights reserved.
- *   Author: Thomas Gubler <thomasgubler@student.ethz.ch>
- *           Julian Oes <joes@student.ethz.ch>
+ *   Copyright (c) 2012-2014 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -41,6 +39,9 @@
 
 /**
  * @file gps_helper.cpp
+ *
+ * @author Thomas Gubler <thomasgubler@student.ethz.ch>
+ * @author Julian Oes <joes@student.ethz.ch>
  */
 
 float
@@ -55,7 +56,7 @@ GPS_Helper::get_velocity_update_rate()
 	return _rate_vel;
 }
 
-float
+void
 GPS_Helper::reset_update_rates()
 {
 	_rate_count_vel = 0;
@@ -63,7 +64,7 @@ GPS_Helper::reset_update_rates()
 	_interval_rate_start = hrt_absolute_time();
 }
 
-float
+void
 GPS_Helper::store_update_rates()
 {
 	_rate_vel = _rate_count_vel / (((float)(hrt_absolute_time() - _interval_rate_start)) / 1000000.0f);

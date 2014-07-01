@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (C) 2013 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2013, 2014 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -76,22 +76,25 @@
 
 #include <drivers/airspeed/airspeed.h>
 
-Airspeed::Airspeed(int bus, int address, unsigned conversion_interval) :
-	I2C("Airspeed", AIRSPEED_DEVICE_PATH, bus, address, 100000),
+Airspeed::Airspeed(int bus, int address, unsigned conversion_interval, const char* path) :
+	I2C("Airspeed", path, bus, address, 100000),
 	_reports(nullptr),
 	_buffer_overflows(perf_alloc(PC_COUNT, "airspeed_buffer_overflows")),
 	_max_differential_pressure_pa(0),
 	_sensor_ok(false),
+	_last_published_sensor_ok(true), /* initialize differently to force publication */
 	_measure_ticks(0),
 	_collect_phase(false),
 	_diff_pres_offset(0.0f),
 	_airspeed_pub(-1),
+	_subsys_pub(-1),
+	_class_instance(-1),
 	_conversion_interval(conversion_interval),
 	_sample_perf(perf_alloc(PC_ELAPSED, "airspeed_read")),
 	_comms_errors(perf_alloc(PC_COUNT, "airspeed_comms_errors"))
 {
 	// enable debug() calls
-	_debug_enabled = true;
+	_debug_enabled = false;
 
 	// work_cancel in the dtor will explode if we don't do this...
 	memset(&_work, 0, sizeof(_work));
@@ -101,6 +104,9 @@ Airspeed::~Airspeed()
 {
 	/* make sure we are truly inactive */
 	stop();
+
+	if (_class_instance != -1)
+		unregister_class_devname(AIRSPEED_DEVICE_PATH, _class_instance);
 
 	/* free any existing reports */
 	if (_reports != nullptr)
@@ -126,17 +132,26 @@ Airspeed::init()
 	if (_reports == nullptr)
 		goto out;
 
-	/* get a publish handle on the airspeed topic */
-	differential_pressure_s zero_report;
-	memset(&zero_report, 0, sizeof(zero_report));
-	_airspeed_pub = orb_advertise(ORB_ID(differential_pressure), &zero_report);
+	/* register alternate interfaces if we have to */
+	_class_instance = register_class_devname(AIRSPEED_DEVICE_PATH);
 
-	if (_airspeed_pub < 0)
-		warnx("failed to create airspeed sensor object. Did you start uOrb?");
+	/* publication init */
+	if (_class_instance == CLASS_DEVICE_PRIMARY) {
+
+		/* advertise sensor topic, measure manually to initialize valid report */
+		struct differential_pressure_s arp;
+		measure();
+		_reports->get(&arp);
+
+		/* measurement will have generated a report, publish */
+		_airspeed_pub = orb_advertise(ORB_ID(differential_pressure), &arp);
+
+		if (_airspeed_pub < 0)
+			warnx("failed to create airspeed sensor object. uORB started?");
+	}
 
 	ret = OK;
-	/* sensor is ok, but we don't really know if it is within range */
-	_sensor_ok = true;
+
 out:
 	return ret;
 }
@@ -330,22 +345,6 @@ Airspeed::start()
 
 	/* schedule a cycle to start things */
 	work_queue(HPWORK, &_work, (worker_t)&Airspeed::cycle_trampoline, this, 1);
-
-	/* notify about state change */
-	struct subsystem_info_s info = {
-		true,
-		true,
-		true,
-		SUBSYSTEM_TYPE_DIFFPRESSURE
-	};
-	static orb_advert_t pub = -1;
-
-	if (pub > 0) {
-		orb_publish(ORB_ID(subsystem_info), pub, &info);
-
-	} else {
-		pub = orb_advertise(ORB_ID(subsystem_info), &info);
-	}
 }
 
 void
@@ -355,11 +354,34 @@ Airspeed::stop()
 }
 
 void
+Airspeed::update_status()
+{
+	if (_sensor_ok != _last_published_sensor_ok) {
+		/* notify about state change */
+		struct subsystem_info_s info = {
+			true,
+			true,
+			_sensor_ok,
+			SUBSYSTEM_TYPE_DIFFPRESSURE
+		};
+
+		if (_subsys_pub > 0) {
+			orb_publish(ORB_ID(subsystem_info), _subsys_pub, &info);
+		} else {
+			_subsys_pub = orb_advertise(ORB_ID(subsystem_info), &info);
+		}
+
+		_last_published_sensor_ok = _sensor_ok;
+	}
+}
+
+void
 Airspeed::cycle_trampoline(void *arg)
 {
 	Airspeed *dev = (Airspeed *)arg;
 
 	dev->cycle();
+	dev->update_status();
 }
 
 void

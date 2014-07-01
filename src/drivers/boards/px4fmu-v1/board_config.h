@@ -85,6 +85,9 @@ __BEGIN_DECLS
 #define GPIO_SPI_CS_MPU		(GPIO_OUTPUT|GPIO_PUSHPULL|GPIO_SPEED_50MHz|GPIO_OUTPUT_SET|GPIO_PORTB|GPIO_PIN0)
 #define GPIO_SPI_CS_SDCARD	(GPIO_OUTPUT|GPIO_PUSHPULL|GPIO_SPEED_50MHz|GPIO_OUTPUT_SET|GPIO_PORTA|GPIO_PIN4)
 
+#define PX4_SPI_BUS_SENSORS	1
+#define PX4_SPI_BUS_EXT		2
+
 /*
  * Use these in place of the spi_dev_e enumeration to
  * select a specific SPI device on SPI1
@@ -96,14 +99,14 @@ __BEGIN_DECLS
 /*
  * Optional devices on IO's external port
  */
-#define PX4_SPIDEV_ACCEL_MAG 2
+#define PX4_SPIDEV_ACCEL_MAG	2
 
 /*
  * I2C busses
  */
-#define PX4_I2C_BUS_ESC		1
+#define PX4_I2C_BUS_ESC		3   // switched with I2c1 - miklm 11/06/2014
 #define PX4_I2C_BUS_ONBOARD	2
-#define PX4_I2C_BUS_EXPANSION	3
+#define PX4_I2C_BUS_EXPANSION	1
 #define PX4_I2C_BUS_LED		3
 
 /*
