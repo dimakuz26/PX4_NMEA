@@ -206,8 +206,8 @@ int NMEA::handle_message(int len){
       _gps_position->time_gps_usec += (uint64_t)((nmea_sec - int(nmea_sec)) * 1e6);
       _gps_position->timestamp_time = hrt_absolute_time();
 
-      _gps_position->eph_m = hdop;     
-      _gps_position->epv_m = hdop*1.5; //Just to work (empirical);
+      _gps_position->eph = hdop;     
+      _gps_position->epv = hdop*1.5; //Just to work (empirical);
 
       _gps_position->vel_m_s = 0;                                  /**< GPS ground speed (m/s) */
       _gps_position->vel_n_m_s = 0;                                /**< GPS ground speed in m/s */
@@ -310,8 +310,8 @@ Example $PASHR,POS,2,10,125410.00,5525.8138702,N,03833.9587380,E,131.555,1.0,0.0
       _gps_position->time_gps_usec += (uint64_t)((nmea_sec - int(nmea_sec)) * 1e6);
       _gps_position->timestamp_time = hrt_absolute_time();
 
-      _gps_position->eph_m = hdop;     
-      _gps_position->epv_m = vdop;
+      _gps_position->eph = hdop;     
+      _gps_position->epv = vdop;
 
    
       const float64_t m_pi  = 3.14159265;
