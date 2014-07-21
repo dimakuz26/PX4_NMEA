@@ -21,6 +21,7 @@
   #include <systemlib/err.h>
   #include <uORB/uORB.h>
   #include <uORB/topics/vehicle_gps_position.h>
+  #include <uORB/topics/satellite_info.h>
   #include <drivers/drv_hrt.h>
 #endif
 
@@ -79,8 +80,9 @@ char*  scanFloat64(const char *pos, int8_t sign, int8_t n_max_int, int8_t n_max_
 
 
 
-NMEA::NMEA(const int &fd, struct vehicle_gps_position_s *gps_position):
+NMEA::NMEA(const int &fd, struct vehicle_gps_position_s *gps_position, struct satellite_info_s *satellite_info):
 _fd(fd),
+_satellite_info(satellite_info),
 _gps_position(gps_position)
 {
     decode_init();  
@@ -370,8 +372,7 @@ Example $PASHR,POS,2,10,125410.00,5525.8138702,N,03833.9587380,E,131.555,1.0,0.0
       if(bufptr && *(++bufptr) != ',') bufptr = scanFloat64(bufptr, 0, 9, 9,&lon_err);
       if(bufptr && *(++bufptr) != ',') bufptr = scanFloat64(bufptr, 0, 9, 9,&alt_err);
 
-      _gps_position->s_variance_m_s = 0; //
-      _gps_position->p_variance_m = sqrt(lat_err*lat_err + lon_err*lon_err + alt_err*alt_err);
+      _gps_position->s_variance_m_s = 0;
       _gps_position->timestamp_variance = hrt_absolute_time();
   }
   else if((memcmp(_rx_buffer+3, "VTG,",3) == 0)&&(uiCalcComma == 9)){
@@ -442,7 +443,7 @@ Example $PASHR,POS,2,10,125410.00,5525.8138702,N,03833.9587380,E,131.555,1.0,0.0
 
     int all_msg_num, this_msg_num, tot_sv_visible;
     struct gsv_sat{
-      int prn;
+      int svid;
       int elevation;
       int azimuth;
       int snr;
@@ -456,31 +457,32 @@ Example $PASHR,POS,2,10,125410.00,5525.8138702,N,03833.9587380,E,131.555,1.0,0.0
       return 0;
     }
     if((this_msg_num == 0)&&(bGPS == true)){
-      memset(_gps_position->satellite_prn,      0,sizeof(_gps_position->satellite_prn));
-      memset(_gps_position->satellite_used,     0,sizeof(_gps_position->satellite_used));
-      memset(_gps_position->satellite_snr,      0,sizeof(_gps_position->satellite_snr));
-      memset(_gps_position->satellite_elevation,0,sizeof(_gps_position->satellite_elevation));
-      memset(_gps_position->satellite_azimuth,  0,sizeof(_gps_position->satellite_azimuth));
+      memset(_satellite_info->svid,      0,sizeof(_satellite_info->svid));
+      memset(_satellite_info->used,     0,sizeof(_satellite_info->used));
+      memset(_satellite_info->snr,      0,sizeof(_satellite_info->snr));
+      memset(_satellite_info->elevation,0,sizeof(_satellite_info->elevation));
+      memset(_satellite_info->azimuth,  0,sizeof(_satellite_info->azimuth));
     }
 
     int end = 4;
     if(this_msg_num == all_msg_num){
       end =  tot_sv_visible - (this_msg_num-1)*4;
-      _gps_position->satellite_info_available = 1;
-      _gps_position->satellites_visible = tot_sv_visible; 
-      _gps_position->timestamp_satellites = hrt_absolute_time();
+      //_gps_position->satellite_info_available = 1;
+      _gps_position->satellites_used = this_msg_num;
+      _satellite_info->count = tot_sv_visible;
+      _satellite_info->timestamp = hrt_absolute_time();
     }
     for(int y = 0 ; y < end ;y++){
-      if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &sat[y].prn);
+      if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &sat[y].svid);
       if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &sat[y].elevation);
       if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &sat[y].azimuth);
       if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &sat[y].snr);
     
-      _gps_position->satellite_prn[y+(this_msg_num-1)*4]       = sat[y].prn;
-      _gps_position->satellite_used[y+(this_msg_num-1)*4]      = ((sat[y].snr>0)? true: false);
-      _gps_position->satellite_snr[y+(this_msg_num-1)*4]       = sat[y].snr;
-      _gps_position->satellite_elevation[y+(this_msg_num-1)*4] = sat[y].elevation;
-      _gps_position->satellite_azimuth[y+(this_msg_num-1)*4]   = sat[y].azimuth;
+      _satellite_info->svid[y+(this_msg_num-1)*4]       = sat[y].svid;
+      _satellite_info->used[y+(this_msg_num-1)*4]      = ((sat[y].snr>0)? true: false);
+      _satellite_info->snr[y+(this_msg_num-1)*4]       = sat[y].snr;
+      _satellite_info->elevation[y+(this_msg_num-1)*4] = sat[y].elevation;
+      _satellite_info->azimuth[y+(this_msg_num-1)*4]   = sat[y].azimuth;
     }
   }
   else if((memcmp(_rx_buffer+3, "ZDA,",3) == 0)&&(uiCalcComma == 6)){

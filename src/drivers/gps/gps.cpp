@@ -344,7 +344,7 @@ GPS::task_main()
 
 			case GPS_DRIVER_MODE_NMEA:
 
-				_Helper = new NMEA(_serial_fd, &_report);
+				_Helper = new NMEA(_serial_fd, &_report_gps_pos, _p_report_sat_info);
 				break;
 
 			default:
