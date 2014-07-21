@@ -512,6 +512,24 @@ Example $PASHR,POS,2,10,125410.00,5525.8138702,N,03833.9587380,E,131.555,1.0,0.0
     if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &year);
     if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &local_time_off_hour);
     if(bufptr && *(++bufptr) != ',') bufptr = str_scanDec(bufptr, 0, 9, &local_time_off_min);
+
+
+    int nmea_hour = nmea_time/10000;
+    int nmea_minute = (nmea_time - nmea_hour*10000)/100;
+    float64_t nmea_sec = nmea_time - nmea_hour*10000 - nmea_minute*100;
+    //convert to unix timestamp
+    struct tm timeinfo;
+    timeinfo.tm_year = 2013 - 1900;
+    timeinfo.tm_mon = 7 - 1; //7(July)
+    timeinfo.tm_mday = 11;
+    timeinfo.tm_hour = nmea_hour;
+    timeinfo.tm_min = nmea_minute;
+    timeinfo.tm_sec = int(nmea_sec);
+    time_t epoch = mktime(&timeinfo);
+
+    _gps_position->time_gps_usec = (uint64_t)epoch * 1000000; //TODO: test this
+    _gps_position->time_gps_usec += (uint64_t)((nmea_sec - int(nmea_sec)) * 1e6);
+    _gps_position->timestamp_time = hrt_absolute_time();
   }
 
   return 0;
@@ -656,6 +674,7 @@ char comm[] = "$PASHS,NME,GGA,B,OFF\r\n"\
               "$PASHS,NME,GST,B,ON,3\r\n"\
               "$PASHS,NME,POS,B,ON,0.1\r\n"\
               "$PASHS,NME,GSV,B,ON,3\r\n"\
+              "$PASHS,NME,ZDA,B,ON,3\r\n"\
               "$PASHS,SPD,A,7\r\n"\
               "$PASHS,SPD,B,7\r\n"; // default baud is 7
 
